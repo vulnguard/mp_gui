@@ -9,6 +9,9 @@ import PIL.Image, PIL.ImageTk
 
 import matplotlib as mpl
 
+MAX_ROWS_ORIGIONAL = 300
+MAX_COLS_ORIGIONAL = 600
+
 class MyGui:
     def __init__(self, window, window_title):
         self.window = window
@@ -17,6 +20,8 @@ class MyGui:
         self.window.title(window_title)
         self.image_history = []
         self.undo_history = []
+        self.saved_image = [None, None, None]
+        self.saved_image_arrays = [None, None, None]
         self.did_undo = False
         self.reset_redo = False
 
@@ -26,14 +31,26 @@ class MyGui:
         self.button_frame = Frame(window, bg="blue")
         self.button_frame.grid(row = 1)
 
-        self.init_buttons()
+        self.init_main_buttons()
 
         # Setup a frame for the iamges
         self.image_frame = Frame(self.window, bg="white")
         self.image_frame.grid(row = 2)
 
+        self.save_frame = Frame(self.window, bg="white")
+        self.save_frame.grid(row = 3)
+
+        self.sl_frame0 = Frame(self.save_frame, bg="white")
+        self.sl_frame0.grid(column = 0, row = 1)
+        self.sl_frame1 = Frame(self.save_frame, bg="white")
+        self.sl_frame1.grid(column = 1, row = 1)
+        self.sl_frame2 = Frame(self.save_frame, bg="white")
+        self.sl_frame2.grid(column = 2, row = 1)
+
+        self.init_save_laod_buttons()
+
         # Set up the labels for the images.
-        self.origional_image_label = tkinter.Label(self.image_frame, text="Origional (0x0)")
+        self.origional_image_label = tkinter.Label(self.image_frame, text="Origional (Not to scale)\nOrigional dims: (0x0)")
         self.origional_image_label.grid(row = 1, column = 0)
 
         self.previous_image_label = tkinter.Label(self.image_frame, text="Previous (0x0)")
@@ -52,10 +69,23 @@ class MyGui:
         self.current_image_canvas = tkinter.Canvas(self.image_frame, width = 200, height = 200)
         self.current_image_canvas.grid(row = 2, column = 2)
 
+        # Setup frames for saved images.
+        self.save_canvas = []
+        self.save_canvas.append(tkinter.Canvas(self.save_frame, width = 200, height = 200))
+        self.save_canvas[0].grid(row = 0, column = 0)
+
+        self.save_canvas.append(tkinter.Canvas(self.save_frame, width = 200, height = 200))
+        self.save_canvas[1].grid(row = 0, column = 1)
+
+        self.save_canvas.append(tkinter.Canvas(self.save_frame, width = 200, height = 200))
+        self.save_canvas[2].grid(row = 0, column = 2)
+
     def close_window(self):
         self.window.quit()
 
     def update_canvas(self):
+        change, origional_rows, origional_cols = self.ensure_image_fit()
+
         origional_image = self.image_history[0]
         modded_image = self.image_history[self.curr_index]
         if self.curr_index > 0:
@@ -64,8 +94,13 @@ class MyGui:
             prev_image = origional_image
 
         rows, cols = get_image_dimentions(origional_image)
+
         self.origional_image_canvas.config(width = cols, height = rows)
-        self.origional_image_label.config(text="Origional ({}x{})".format(rows, cols))
+        label_text = "Origional ({}{}x{}){}"\
+                     .format("Rescaled to: " if change else "", rows, cols,\
+                     "\nOrigional dims: ({}x{})".format(origional_rows, origional_cols)\
+                     if change else "")
+        self.origional_image_label.config(text=label_text)
 
         rows, cols = get_image_dimentions(prev_image)
         self.previous_image_canvas.config(width = cols, height = rows)
@@ -74,6 +109,28 @@ class MyGui:
         rows, cols = get_image_dimentions(modded_image)
         self.current_image_canvas.config(width = cols, height = rows)
         self.current_image_label.config(text="Current ({}x{})".format(rows, cols))
+
+    def ensure_image_fit(self):
+        origional_image = self.image_history[0]
+        rows, cols = get_image_dimentions(origional_image)
+
+        # Rescale oriigonal if its too big so that it looks nicer.
+        change = False
+
+        row_factor = col_factor = 1
+        if rows > MAX_ROWS_ORIGIONAL:
+            row_factor = MAX_ROWS_ORIGIONAL / rows
+        if cols > MAX_COLS_ORIGIONAL:
+            col_factor = MAX_COLS_ORIGIONAL / cols
+
+        min_factor = min(row_factor, col_factor)
+
+        if not min_factor == 1:
+            change = True
+
+        self.image_history[0] = resize_image(self.image_history[0], min_factor, min_factor)
+
+        return change, rows, cols
 
     def load_image(self):
         path = filedialog.askopenfilename(initialdir = "res/prac2")
@@ -305,20 +362,8 @@ class MyGui:
             print("Cannot affine_transform empty image.")
             return
 
-        defaults = ["50,50", "200,50", "50,200", "10,100", "200,50", "100,250"]
-        self.get_choice_from_values(["start_p1", "start_p2", "start_p3",\
-                                     "end_p1", "end_p2", "end_p3"], defaults, self.do_affine)
-
-    def do_affine(self):
-        values = self.curr_choice
-        all_points = []
-        for point in values:
-            point = point.split(",")
-            all_points.append([int(point[0]), int(point[1])])
-
-        modded = apply_affine_transformation(self.image_history[self.curr_index], all_points[0:3], all_points[3:6])
-        self.update_canvas()
-        self.notify_mod_operation(modded)
+        defaults = ["", 0.5]
+        self.get_choice_from_values(["Factor (x)", "Factor (y)"], defaults, self.do_resize)
 
 
     def pixel_transform(self):
@@ -326,14 +371,7 @@ class MyGui:
             print("Cannot pixel_transform empty image.")
             return
 
-        defaults = [0.5, 10]
-        self.get_choice_from_values(["Alpha", "Beta"], defaults, self.do_aff_pixel)
-
-    def do_aff_pixel(self):
-        alpha = float(self.curr_choice[0])
-        beta = float(self.curr_choice[1])
-
-        modded = apply_affine_pixel_transform(self.image_history[self.curr_index], alpha, beta)
+        modded = apply_affine_pixel_transform(self.image_history[self.curr_index], 1, 1)
         self.notify_mod_operation(modded)
 
     def draw_rect(self):
@@ -531,7 +569,7 @@ class MyGui:
         self.notify_mod_operation(modded)
 
     # Init stuff
-    def init_buttons(self):
+    def init_main_buttons(self):
         self.buttons = []
         self.curr_button_row = 0
         self.curr_button_col = 2
@@ -539,7 +577,7 @@ class MyGui:
         self.add_button(self.button_frame, "Load image", self.load_image, "green", 0)
 
         self.curr_button_col = 4
-        self.add_button(self.button_frame, "Save image", self.save_image, "green", 0)
+        self.add_button(self.button_frame, "Save current", self.save_image, "green", 0)
 
         # Modifiers (row1)
         self.curr_button_row += 1
@@ -597,13 +635,35 @@ class MyGui:
         self.add_button(self.button_frame, "Undo", self.undo, "yellow")
 
         # Redo
-        self.curr_button_col = 3
         self.curr_button_col = 4
         self.add_button(self.button_frame, "Redo", self.redo, "yellow")
 
         # Close
         self.curr_button_col = 6
         self.add_button(self.button_frame, "Close", self.close_window, "red")
+
+
+    def init_save_laod_buttons(self):
+        # Row 1 (save/load)
+        self.curr_button_row = 1
+        self.curr_button_col = 0
+        self.add_button(self.sl_frame0, "save here", lambda: self.save_local(0), "green")
+        self.add_button(self.sl_frame0, "load this", lambda: self.load_local(0), "yellow")
+
+        self.curr_button_col = 0
+        self.add_button(self.sl_frame1, "save here", lambda: self.save_local(1), "green")
+        self.add_button(self.sl_frame1, "load this", lambda: self.load_local(1), "yellow")
+
+        self.curr_button_col = 0
+        self.add_button(self.sl_frame2, "save here", lambda: self.save_local(2), "green")
+        self.add_button(self.sl_frame2, "load this", lambda: self.load_local(2), "yellow")
+
+        # Row 2 (del)
+        self.curr_button_row = 2
+        self.curr_button_col = 0
+        self.add_button(self.save_frame, "delete save", lambda: self.delete_save(0), "red")
+        self.add_button(self.save_frame, "delete save", lambda: self.delete_save(1), "red")
+        self.add_button(self.save_frame, "delete save", lambda: self.delete_save(2), "red")
 
     def add_button(self, frame, text, command, background = "gray", row = None, col = None):
         if row is None:
@@ -615,3 +675,35 @@ class MyGui:
         # print("adding button '{}' to {}, {}".format(text, row, col))
         self.buttons.append(Button(frame, text=text, command=command, bg = background))
         self.buttons[-1].grid(row = row, column = col)
+
+
+    def save_local(self, index):
+        if len(self.image_history) == 0:
+            print("Cannot save empty image. ({})".format(index))
+            return
+
+        self.saved_image[index] = self.image_history[-1]
+        rows, cols = get_image_dimentions(self.saved_image[index])
+        self.save_canvas[index].config(width = cols, height = rows)
+
+        self.saved_image_arrays[index] = PIL.ImageTk.PhotoImage(image = PIL.Image.fromarray(self.saved_image[index]))
+        self.save_canvas[index].delete("all")
+        self.save_canvas[index].create_image(0, 0, image=self.saved_image_arrays[index], anchor=tkinter.NW)
+
+
+    def load_local(self, index):
+        if self.saved_image[index] is None:
+            print("Cannot load empty image ({})".format(index))
+            return
+
+        self.notify_mod_operation(self.saved_image[index])
+
+    def delete_save(self, index):
+        if self.saved_image[index] is None:
+            print("Cannot delete empty save ({})".format(index))
+            return
+
+        self.save_canvas[index].config(width = 200, height = 200)
+        self.saved_image[index] = None
+        self.saved_image_arrays[index] = None
+        self.save_canvas[index].delete("all")
